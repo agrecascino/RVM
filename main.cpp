@@ -296,7 +296,7 @@ class RGA {
 
 class RVM {
     public:
-    RVM(RMMU &mmu) {
+    RVM(RMMU &mmu) : baseaddr(mmu){
         for(int i = ADD;i <= PUSH16;i++) {
             jump_offset[i] = 6;
             inst_length[i] = 2;
@@ -782,7 +782,7 @@ class RVM {
                     case LD: {
                         unsigned int bytes = (baseaddr[pc+1] & 0x03);
                         if(bytes == 2) {
-                            break;
+                            throw CPUException(ILLEGAL_INSTRUCTION);
                         }
                         if(!silent) {
                             std::cout << r[(baseaddr[pc+1] & 0x1c) >> 2] << std::endl;
@@ -797,7 +797,7 @@ class RVM {
                     case ST: {
                         unsigned int bytes = (baseaddr[pc+1] & 0x03);
                         if(bytes == 2) {
-                            break;
+                            throw CPUException(ILLEGAL_INSTRUCTION);
                         }
                         if(!silent) {
                             std::cout << r[(baseaddr[pc+1] & 0x1c) >> 2] << std::endl;
@@ -929,7 +929,7 @@ class RVM {
     private:
     long breakpoint = -1;
     unsigned long n_inst = 0;
-    RMMU baseaddr = RMMU(0);
+    RMMU baseaddr;
     int HLTed = false;
     int interrupt = false;
     int interrupts_enabled = true;
@@ -949,11 +949,11 @@ int main()
     memset(arr,0x00,16777216);
 
     RMMU mmu(arr);
-    //RTTY tty(arr);
-    //RGA rga(arr);
+    RTTY tty(arr);
+    RGA rga(arr);
     RVM rvm(mmu);
-    //rvm.add_to_clock(std::bind(&RTTY::do_stuff,&tty));
-    //rvm.add_to_clock(std::bind(&RGA::do_stuff,&rga));
+    rvm.add_to_clock(std::bind(&RTTY::do_stuff,&tty));
+    rvm.add_to_clock(std::bind(&RGA::do_stuff,&rga));
     fstream f("test.rom");
     if(f.is_open()) {
         char c;
@@ -1018,7 +1018,7 @@ int main()
     arr[37] = 0x00;
     arr[38] = 0x00;
     arr[39] = 0x06;*/
-    /*std::thread t ([&](){*/rvm.start(false, true);//});
+    /*std::thread t ([&](){*/rvm.start(true, false);//});
     //t.join();
     return 0;
 }
