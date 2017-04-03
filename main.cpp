@@ -1,4 +1,5 @@
 #include <iostream>
+#include <atomic>
 #include <cstdlib>
 #include <cstdio>
 #include <bitset>
@@ -31,6 +32,7 @@
 #define MAX INT32_MAX
 #define MIN INT32_MIN
 #define ILLEGAL_INSTRUCTION 0
+#define PERMISSION_EXCEPTION 1
 
 class CPUException : public std::exception {
     public:
@@ -169,7 +171,7 @@ enum instructions {
     POP8,
     POP16,
     PUSH8,
-    PUSH16
+    PUSH16,
 
     //maybe add a conditional move
 
@@ -218,6 +220,7 @@ class RTTY {
             listen(server,4);
             conn_thread = std::thread(&RTTY::acceptconnections,this);
             conn_thread.detach();
+            signal(SIGPIPE,SIG_IGN);
         }
         void acceptconnections() {
             while(true) {
@@ -226,7 +229,6 @@ class RTTY {
         }
 
         void do_stuff() {
-            signal(SIGPIPE,SIG_IGN);
             if(memory[16282] != 0) {
                 for(int client : clients) {
                     char data = 0;
@@ -266,32 +268,68 @@ class RGA {
             screen = SDL_SetVideoMode(320,240,32,SDL_DOUBLEBUF);
             TTF_Init();
             memory = ptr;
+            palette[0].r = 0;
+            palette[0].g = 0;
+            palette[0].b = 0;
+            palette[1].r = 0;
+            palette[1].g = 0;
+            palette[1].b = 170;
+            palette[2].r = 0;
+            palette[2].g = 170;
+            palette[2].b = 0;
         }
         void do_stuff() {
             if(memory[16383] != 0) {
                 //std::cout << "Blitting framebuffer to screen" << std::endl;
                 SDL_Surface *buf = SDL_CreateRGBSurfaceFrom(&memory[16384],320,240,8,320,0,0,0,0);
-                SDL_Color *palette = new SDL_Color[256];
-                palette[0].r = 0;
-                palette[0].g = 0;
-                palette[0].b = 0;
-                palette[1].r = 0;
-                palette[1].g = 0;
-                palette[1].b = 170;
-                palette[2].r = 0;
-                palette[2].g = 170;
-                palette[2].b = 0;
                 SDL_SetPalette(buf,SDL_LOGPAL | SDL_PHYSPAL,palette,0,256);
                 SDL_BlitSurface(buf,NULL,screen,NULL);
                 SDL_Flip(screen);
                 memory[16383] = 0;
-
+                SDL_FreeSurface(buf);
             }
         }
-
+        ~RGA() {
+            delete[] palette;
+        }
     private:
+        SDL_Color *palette = new SDL_Color[256];
         SDL_Surface *screen;
         unsigned char* memory;
+};
+
+struct thread {
+    thread(std::function<void()> function) {
+        func = function;
+        go = false;
+        t = std::thread(std::bind(&thread::thread_queue,this));
+    }
+
+    thread(thread&& other) : go(static_cast<bool>(other.go)){
+
+    }
+
+    void thread_queue() {
+        while(true) {
+            if(go) {
+                func();
+                go = false;
+            }
+        }
+    }
+
+    void wait_and_restart() {
+        if(go) {
+            while(go) {}
+            go = true;
+        } else {
+             go = true;
+        }
+    }
+
+    std::function<void()> func;
+    std::thread t;
+    std::atomic<bool> go;
 };
 
 class RVM {
@@ -312,11 +350,10 @@ class RVM {
         inst_length[RET] = 1;
         inst_length[IRET] = 1;
         inst_length[HLT] = 1;
-        baseaddr = mmu;
         gettimeofday(&initial,NULL);
     }
     void add_to_clock(std::function<void()> function) {
-        function_list.push_back(function);
+        function_list.push_back(std::move(thread(function)));
     }
 
     int irq(unsigned char interrupt) {
@@ -333,7 +370,7 @@ class RVM {
         while(1) {
             for(size_t i = 0; i < function_list.size(); i++) {
                 // use this to fake hardware properties and do cool processing stuff
-                function_list[i]();
+                function_list[i].wait_and_restart();
             }
             if(pc == breakpoint) {
                 gettimeofday(&stop,NULL);
@@ -427,7 +464,16 @@ class RVM {
                     }
                     if((baseaddr[pc+1] % 2) != 0) {
                         unsigned int oldpc = pc;
-                        pc = 0;
+                        pc = 0;                SDL_Color *palette = new SDL_Color[256];
+                        palette[0].r = 0;
+                        palette[0].g = 0;
+                        palette[0].b = 0;
+                        palette[1].r = 0;
+                        palette[1].g = 0;
+                        palette[1].b = 170;
+                        palette[2].r = 0;
+                        palette[2].g = 170;
+                        palette[2].b = 0;
                         pc |= (baseaddr[oldpc+2] << 24);
                         pc |= (baseaddr[oldpc+3] << 16);
                         pc |= (baseaddr[oldpc+4] << 8);
@@ -863,21 +909,10 @@ class RVM {
                 baseaddr[stackptr] = (flags.to_ulong()) << 24;
                 jump = true;
                 pc = 0;
-                pc |= (baseaddr[itableptr + interrupt] << 24);
-                pc |= (baseaddr[itableptr + interrupt + 1] << 16);
-                pc |= (baseaddr[itableptr + interrupt + 2] << 8);
-                pc |= (baseaddr[itableptr + interrupt + 3]);
-                switch(exception.getExceptionType()) {
-                    default:
-                        stackptr -= 4;
-                        baseaddr[stackptr - 3] = exception.getExceptionType();
-                        baseaddr[stackptr - 2] = (exception.getExceptionType()) << 8;
-                        baseaddr[stackptr - 1] = (exception.getExceptionType()) << 16;
-                        baseaddr[stackptr] = (exception.getExceptionType()) << 24;
-                        if(!silent)
-                            std::cout << "Handling Exception." << std::endl;
-                        break;
-                }
+                pc |= (baseaddr[itableptr + exception.getExceptionType()] << 24);
+                pc |= (baseaddr[itableptr + exception.getExceptionType() + 1] << 16);
+                pc |= (baseaddr[itableptr + exception.getExceptionType() + 2] << 8);
+                pc |= (baseaddr[itableptr + exception.getExceptionType() + 3]);
             }
 
             n_inst++;
@@ -923,7 +958,7 @@ class RVM {
     }
     std::bitset<8> flags;
     unsigned int r[8] = {0,0,0,0,0,0,0,0};
-    std::vector<std::function<void()>> function_list;
+    std::vector<thread> function_list;
     std::map<int,int> jump_offset;
     std::map<int,int> inst_length;
     private:
@@ -937,7 +972,7 @@ class RVM {
     unsigned int stackptr = 0;
     unsigned int baseptr = 0;
     unsigned int pc = 0;
-    timeval initial,stop;
+    timeval initial, stop;
 
 };
 
@@ -1020,5 +1055,6 @@ int main()
     arr[39] = 0x06;*/
     /*std::thread t ([&](){*/rvm.start(true, false);//});
     //t.join();
+    delete[] arr;
     return 0;
 }
