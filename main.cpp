@@ -25,6 +25,7 @@
 #include <signal.h>
 #include <SDL/SDL.h>
 #include <SDL/SDL_ttf.h>
+#include <math.h>
 #define STORE32C 3
 #define STORE32 2
 #define STORE16 1
@@ -33,6 +34,10 @@
 #define MIN INT32_MIN
 #define ILLEGAL_INSTRUCTION 0
 #define PERMISSION_EXCEPTION 1
+#define RAPIC_EOI 4
+#define RAPIC_DANCE 1
+#define RAPIC_FAIRY 2
+#define RAPIC_WAIFU 3
 
 class CPUException : public std::exception {
     public:
@@ -176,6 +181,11 @@ enum instructions {
     //maybe add a conditional move
 
 };
+struct MemRange {
+    MemRange(unsigned int address, unsigned int length) : address(address), length(length) {}
+    unsigned int address;
+    unsigned int length;
+};
 
 
 class RMMU {
@@ -183,20 +193,30 @@ class RMMU {
     RMMU(unsigned char* baseptr) {
         baseaddr = baseptr;
     }
-    void write(unsigned int offset, unsigned char value) {
-        baseaddr[offset] = value;
-    }
-    unsigned char& read(unsigned int offset) {
+
+    void* read(unsigned int offset, unsigned int &length) {
         return baseaddr[offset];
     }
-    unsigned char& operator[](unsigned int assign) {
-        return baseaddr[assign];
+    void write(unsigned int assign, unsigned int &length, void* val) {
+        unsigned char endian[length];
+        for(int i = length - 1;i <= 0;i--) {
+            endian[i] = ((unsigned char*)val)[(length - i)];
+        }
+        memcpy((baseaddr + assign),&endian,length);
     }
-    unsigned char* get_base() {
+    /*
+    unsigned char* safecopy(unsigned int length, void* dest, void* src) {
         return baseaddr;
     }
+    */
+
+    void map(MemRange mrange,std::function<void(unsigned int, unsigned int, bool)> &func) {
+        maps[mrange] = func;
+    }
+
 
     private:
+    std::map<MemRange,std::function<void(unsigned int, unsigned int, bool)>> maps;
     unsigned char* baseaddr;
 };
 
@@ -204,133 +224,9 @@ class RIOMMU {
 
 };
 
-class RTTY {
-    public:
-        RTTY(unsigned char *ptr) {
-            memory = ptr;
-            server = socket(AF_INET,SOCK_STREAM,0);
-            int enable = 1;
-            setsockopt(server,SOL_SOCKET,SO_REUSEADDR,&enable,sizeof(int));
-            sockaddr_in localhost;
-            memset(&localhost,'0',sizeof(localhost));
-            localhost.sin_family = AF_INET;
-            localhost.sin_port = htons(3423);
-            localhost.sin_addr.s_addr = htonl(INADDR_ANY);
-            bind(server,(struct sockaddr*)&localhost,sizeof(localhost));
-            listen(server,4);
-            conn_thread = std::thread(&RTTY::acceptconnections,this);
-            conn_thread.detach();
-            signal(SIGPIPE,SIG_IGN);
-        }
-        void acceptconnections() {
-            while(true) {
-                clients.push_back(accept(server,NULL,NULL));
-            }
-        }
-
-        void do_stuff() {
-            if(memory[16282] != 0) {
-                for(int client : clients) {
-                    char data = 0;
-
-                    size_t retval = recv(client,&data,1,MSG_DONTWAIT);
-                    if(retval == -1) {
-                        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                            clients.erase(std::remove(clients.begin(),clients.end(),client),clients.end());
-                            continue;
-                        }
-
-                    }
-                    if(retval == 0) {
-                        clients.erase(std::remove(clients.begin(),clients.end(),client),clients.end());
-                        continue;
-                    }
-                    send(client,&memory[16281],1,0);
-                }
-
-            }
-            memory[16282] = 0;
-
-        }
-    private:
-        std::thread conn_thread;
-        std::vector<int> clients;
-        int server;
-        unsigned char *memory;
-};
 
 class RVM;
 
-class RGA {
-    public:
-        RGA(unsigned char* ptr) {
-            SDL_Init(SDL_INIT_EVERYTHING);
-            screen = SDL_SetVideoMode(320,240,32,SDL_DOUBLEBUF);
-            TTF_Init();
-            memory = ptr;
-            palette[0].r = 0;
-            palette[0].g = 0;
-            palette[0].b = 0;
-            palette[1].r = 0;
-            palette[1].g = 0;
-            palette[1].b = 170;
-            palette[2].r = 0;
-            palette[2].g = 170;
-            palette[2].b = 0;
-        }
-        void do_stuff() {
-            if(memory[16383] != 0) {
-                //std::cout << "Blitting framebuffer to screen" << std::endl;
-                SDL_Surface *buf = SDL_CreateRGBSurfaceFrom(&memory[16384],320,240,8,320,0,0,0,0);
-                SDL_SetPalette(buf,SDL_LOGPAL | SDL_PHYSPAL,palette,0,256);
-                SDL_BlitSurface(buf,NULL,screen,NULL);
-                SDL_Flip(screen);
-                memory[16383] = 0;
-                SDL_FreeSurface(buf);
-            }
-        }
-        ~RGA() {
-            delete[] palette;
-        }
-    private:
-        SDL_Color *palette = new SDL_Color[256];
-        SDL_Surface *screen;
-        unsigned char* memory;
-};
-
-struct thread {
-    thread(std::function<void()> function) {
-        func = function;
-        go = false;
-        t = std::thread(std::bind(&thread::thread_queue,this));
-    }
-
-    thread(thread&& other) : go(static_cast<bool>(other.go)){
-
-    }
-
-    void thread_queue() {
-        while(true) {
-            if(go) {
-                func();
-                go = false;
-            }
-        }
-    }
-
-    void wait_and_restart() {
-        if(go) {
-            while(go) {}
-            go = true;
-        } else {
-             go = true;
-        }
-    }
-
-    std::function<void()> func;
-    std::thread t;
-    std::atomic<bool> go;
-};
 
 class RVM {
     public:
@@ -353,7 +249,7 @@ class RVM {
         gettimeofday(&initial,NULL);
     }
     void add_to_clock(std::function<void()> function) {
-        function_list.push_back(std::move(thread(function)));
+        function_list.push_back(function);
     }
 
     int irq(unsigned char interrupt) {
@@ -362,16 +258,14 @@ class RVM {
                 std::this_thread::sleep_for(std::chrono::microseconds(20));
             }
         }
-        interrupt = true;
+        this->interrupt = true;
+        interrupt_vector = interrupt;
+        std::cout << "Interrupt recieved: " << (int)interrupt_vector << std::endl;
         return 1;
     }
 
     void start(bool debug, bool silent) {
         while(1) {
-            for(size_t i = 0; i < function_list.size(); i++) {
-                // use this to fake hardware properties and do cool processing stuff
-                function_list[i].wait_and_restart();
-            }
             if(pc == breakpoint) {
                 gettimeofday(&stop,NULL);
                 std::cout << "Hit breakpoint: pc=" << pc << std::endl;
@@ -384,7 +278,7 @@ class RVM {
                 std::string action;
                 std::locale ascii;
                 back:
-                std::cout << "Step(s) Read pointer(r) Get current instruction(i) Get number of instructions ran(n) Go(g) Set Breakpoint(b) Quiet(q) [S/r/i/n/g/b/q]" << std::endl;
+                std::cout << "Step(s) Peek memory(p) Get current instruction(i) Get number of instructions ran(n) Go(g) Set Breakpoint(b) Quiet(q) [S/r/i/n/g/b/q]" << std::endl;
                 std::getline(std::cin,action);
                 if(action.size() == 0) {
                     goto step;
@@ -392,8 +286,9 @@ class RVM {
                 char eval_this = std::toupper(action[0],ascii);
                 if(eval_this == 'S') {
                     goto step;
-                } else if(eval_this == 'R') {
-                    std::cout << "Unimplemented debugging feature" << std::endl;
+                } else if(eval_this == 'P') {
+                    int mvalue = std::stoul(action.substr(1).c_str(),0,10);
+                    std::cout << "The memory at " << mvalue << " is " << (unsigned long)baseaddr[mvalue] << std::endl;
                     goto back;
                 } else if(eval_this == 'N') {
                     std::cout << "Number of instructions ran: " << n_inst << std::endl;
@@ -417,8 +312,32 @@ class RVM {
 
             }
             step:
+            for(size_t i = 0; i < function_list.size(); i++) {
+                // use this to fake hardware properties and do cool processing stuff
+                function_list[i]();
+            }
             int halt = false;
             int jump = false;
+            if(interrupt) {
+                interrupt = false;
+                stackptr -= 4;
+                baseaddr[stackptr - 3] = pc + 3;
+                baseaddr[stackptr - 2] = (pc + 3) << 8;
+                baseaddr[stackptr - 1] = (pc + 3) << 16;
+                baseaddr[stackptr] = (pc + 3) << 24;
+                stackptr -= 4;
+                baseaddr[stackptr - 3] = flags.to_ulong();
+                baseaddr[stackptr - 2] = (flags.to_ulong()) << 8;
+                baseaddr[stackptr - 1] = (flags.to_ulong()) << 16;
+                baseaddr[stackptr] = (flags.to_ulong()) << 24;
+                jump = true;
+                pc = 0;
+                pc |= (baseaddr[itableptr + interrupt_vector] << 24);
+                pc |= (baseaddr[itableptr + interrupt_vector + 1] << 16);
+                pc |= (baseaddr[itableptr + interrupt_vector + 2] << 8);
+                pc |= (baseaddr[itableptr + interrupt_vector + 3]);
+                goto irq;
+            }
             try {
                 switch(baseaddr[pc]) {
                 case MOD:
@@ -464,16 +383,7 @@ class RVM {
                     }
                     if((baseaddr[pc+1] % 2) != 0) {
                         unsigned int oldpc = pc;
-                        pc = 0;                SDL_Color *palette = new SDL_Color[256];
-                        palette[0].r = 0;
-                        palette[0].g = 0;
-                        palette[0].b = 0;
-                        palette[1].r = 0;
-                        palette[1].g = 0;
-                        palette[1].b = 170;
-                        palette[2].r = 0;
-                        palette[2].g = 170;
-                        palette[2].b = 0;
+                        pc = 0;
                         pc |= (baseaddr[oldpc+2] << 24);
                         pc |= (baseaddr[oldpc+3] << 16);
                         pc |= (baseaddr[oldpc+4] << 8);
@@ -508,8 +418,8 @@ class RVM {
                             *regptr -= addval;
                             break;
                         }
-                        flags[1] = checked_sub(*regptr,*(int*)r[(baseaddr[pc+1] & 0x1c) >> 2],NULL);
-                        *regptr -= *(int*)r[(baseaddr[pc+1] & 0x1c) >> 2];
+                        flags[1] = checked_sub(*regptr,*((int*)r[(baseaddr[pc+1] & 0x1c) >> 2]),NULL);
+                        *regptr -= *((int*)r[(baseaddr[pc+1] & 0x1c) >> 2]);
                     }
                     break;
                     case C2A: {
@@ -524,8 +434,8 @@ class RVM {
                                 *regptr += addval;
                                 break;
                             }
-                            flags[1] = checked_add(*regptr,*(int*)r[(baseaddr[pc+1] & 0x1c) >> 2],NULL);
-                            *regptr += *(int*)r[(baseaddr[pc+1] & 0x1c) >> 2];
+                            flags[1] = checked_add(*regptr,*((int*)r[(baseaddr[pc+1] & 0x1c) >> 2]),NULL);
+                            *regptr += *((int*)r[(baseaddr[pc+1] & 0x1c) >> 2]);
                         }
                         break;
                     case NOT:
@@ -846,6 +756,7 @@ class RVM {
                             throw CPUException(ILLEGAL_INSTRUCTION);
                         }
                         if(!silent) {
+                            std::cout << "storing to " << std::endl;
                             std::cout << r[(baseaddr[pc+1] & 0x1c) >> 2] << std::endl;
                             std::cout << ((baseaddr[pc+1] & 0x1c) >> 2) << std::endl;
                         }
@@ -944,6 +855,7 @@ class RVM {
                 HLTed = true;
                 break;
             } else if (jump) {
+                irq:
                 if(!silent)
                     std::cout << "Jumping to: " << pc << std::endl;
                 continue;
@@ -956,15 +868,16 @@ class RVM {
             pc += inst_length[baseaddr[pc]];
         }
     }
+    unsigned char interrupt_vector;
     std::bitset<8> flags;
     unsigned int r[8] = {0,0,0,0,0,0,0,0};
-    std::vector<thread> function_list;
+    std::vector<std::function<void()>> function_list;
     std::map<int,int> jump_offset;
     std::map<int,int> inst_length;
     private:
     long breakpoint = -1;
     unsigned long n_inst = 0;
-    RMMU baseaddr;
+    RMMU &baseaddr;
     int HLTed = false;
     int interrupt = false;
     int interrupts_enabled = true;
@@ -976,17 +889,155 @@ class RVM {
 
 };
 
+class RAPIC {
+public:
+    RAPIC(RVM &rvm, RMMU &mmu) : mmu(mmu), r(rvm) {}
+
+    void interrupt(unsigned char num){
+        std::cout << "Maxed: " << std::min((int)num,64) << std::endl;
+        interrupts[std::min((int)num,64)] = 1;
+    }
+
+    void check_for_interrupts() {
+        for(size_t i = 0; i < 64; i++){
+            if(interrupts[i] == 1) {
+                interrupts[i] = 0;
+                holding_line = true;
+                current_interrupt = i;
+                r.irq(i + 16);
+                break;
+            }
+        }
+    }
+
+    void work_loop() {
+        while(true) {
+            if(!holding_line) {
+                check_for_interrupts();
+            }
+            if(holding_line && (mmu[16000] == RAPIC_EOI)) {
+                holding_line = false;
+                current_interrupt = 0x9001;
+                mmu[16000] = 0;
+            }
+        }
+    }
+
+private:
+    RMMU &mmu;
+    RVM &r;
+    unsigned char current_interrupt;
+    bool holding_line = false;
+    std::bitset<64> interrupts;
+};
+
+class RGA {
+    public:
+        RGA(unsigned char* ptr, RAPIC &rapic): rapic(rapic) {
+            SDL_Init(SDL_INIT_EVERYTHING);
+            screen = SDL_SetVideoMode(320,240,32,SDL_DOUBLEBUF);
+            TTF_Init();
+            memory = ptr;
+            palette[0].r = 0;
+            palette[0].g = 0;
+            palette[0].b = 0;
+            palette[1].r = 0;
+            palette[1].g = 0;
+            palette[1].b = 170;
+            palette[2].r = 0;
+            palette[2].g = 170;
+            palette[2].b = 0;
+        }
+        void do_stuff() {
+            if(memory[16383] != 0) {
+                //std::cout << "Blitting framebuffer to screen" << std::endl;
+                SDL_Surface *buf = SDL_CreateRGBSurfaceFrom(&memory[16384],320,240,8,320,0,0,0,0);
+                SDL_SetPalette(buf,SDL_LOGPAL | SDL_PHYSPAL,palette,0,256);
+                SDL_BlitSurface(buf,NULL,screen,NULL);
+                SDL_Flip(screen);
+                memory[16383] = 0;
+                SDL_FreeSurface(buf);
+            }
+        }
+        ~RGA() {
+            delete[] palette;
+        }
+    private:
+        RAPIC &rapic;
+        SDL_Color *palette = new SDL_Color[256];
+        SDL_Surface *screen;
+        unsigned char* memory;
+};
+
+
+class RTTY {
+    public:
+        RTTY(unsigned char *ptr, RAPIC &rapic): rapic(rapic) {
+            memory = ptr;
+            server = socket(AF_INET,SOCK_STREAM,0);
+            int enable = 1;
+            setsockopt(server,SOL_SOCKET,SO_REUSEADDR,&enable,sizeof(int));
+            sockaddr_in localhost;
+            memset(&localhost,'0',sizeof(localhost));
+            localhost.sin_family = AF_INET;
+            localhost.sin_port = htons(3423);
+            localhost.sin_addr.s_addr = htonl(INADDR_ANY);
+            bind(server,(struct sockaddr*)&localhost,sizeof(localhost));
+            listen(server,4);
+            conn_thread = std::thread(&RTTY::acceptconnections,this);
+            conn_thread.detach();
+            signal(SIGPIPE,SIG_IGN);
+        }
+        void acceptconnections() {
+            while(true) {
+                clients.push_back(accept(server,NULL,NULL));
+            }
+        }
+
+        void do_stuff() {
+            if(memory[16282] != 0) {
+                rapic.interrupt(24);
+                for(int client : clients) {
+                    char data = 0;
+
+                    ssize_t retval = recv(client,&data,1,MSG_DONTWAIT);
+                    if(retval == -1) {
+                        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                            clients.erase(std::remove(clients.begin(),clients.end(),client),clients.end());
+                            continue;
+                        }
+
+                    }
+                    if(retval == 0) {
+                        clients.erase(std::remove(clients.begin(),clients.end(),client),clients.end());
+                        continue;
+                    }
+                    send(client,&memory[16281],1,0);
+                }
+
+            }
+            memory[16282] = 0;
+
+        }
+    private:
+        RAPIC &rapic;
+        std::thread conn_thread;
+        std::vector<int> clients;
+        int server;
+        unsigned char *memory;
+};
+
 using namespace std;
 
 int main()
 {
     unsigned char *arr = new unsigned char[16777216]; //16M of ram
     memset(arr,0x00,16777216);
-
     RMMU mmu(arr);
-    RTTY tty(arr);
-    RGA rga(arr);
     RVM rvm(mmu);
+    RAPIC rapic(rvm, mmu);
+    RTTY tty(arr,rapic);
+    RGA rga(arr,rapic);
     rvm.add_to_clock(std::bind(&RTTY::do_stuff,&tty));
     rvm.add_to_clock(std::bind(&RGA::do_stuff,&rga));
     fstream f("test.rom");
@@ -1053,8 +1104,9 @@ int main()
     arr[37] = 0x00;
     arr[38] = 0x00;
     arr[39] = 0x06;*/
-    /*std::thread t ([&](){*/rvm.start(true, false);//});
-    //t.join();
+    std::thread t ([&](){rapic.work_loop();});
+    t.detach();
+    rvm.start(true, false);
     delete[] arr;
     return 0;
 }
