@@ -67,15 +67,15 @@ void split_string(std::string const &k, std::string const &delim, std::vector<st
 }
 
 
-int checked_add(int32_t a, int32_t b, int32_t *rp) {
-  int64_t lr = (int64_t)a + (int64_t)b;
+int checked_add(int64_t a, int64_t b, int64_t *rp) {
+  int128_t lr = (int128_t)a + (int128_t)b;
   if(rp != NULL)
       *rp = lr;
   return lr > MAX || lr < MIN;
 }
 
-int checked_sub(int32_t a, int32_t b, int32_t *rp) {
-  int64_t lr = (int64_t)a - (int64_t)b;
+int checked_sub(int64_t a, int64_t b, int64_t *rp) {
+  int128_t lr = (int128_t)a - (int128_t)b;
   if(rp != NULL)
     *rp = lr;
   return lr > MAX || lr < MIN;
@@ -184,8 +184,8 @@ enum instructions {
 };
 struct MemRange {
     MemRange(unsigned int address, unsigned int length) : address(address), length(length) {}
-    unsigned int address;
-    unsigned int length;
+    unsigned long address;
+    unsigned long length;
 };
 
 
@@ -205,6 +205,10 @@ class RMMU {
 
     unsigned int* read32(unsigned int offset) {
         return (unsigned int*)(baseaddr + offset);
+    }
+
+    unsigned long* read64(unsigned int offset) {
+        return (unsigned long*)(baseaddr + offset);
     }
 
     void write(unsigned int assign, unsigned int length, void* val) {
@@ -241,21 +245,6 @@ class RVM;
 class RVM {
     public:
     RVM(RMMU &mmu) : baseaddr(mmu){
-        for(int i = ADD;i <= PUSH16;i++) {
-            jump_offset[i] = 6;
-            inst_length[i] = 2;
-        }
-        jump_offset[PUSH8] = 3;
-        jump_offset[PUSH16] = 4;
-        jump_offset[LD] = 2;
-        jump_offset[ST] = 2;
-        inst_length[DSP] = 1;
-        inst_length[DBP] = 1;
-        inst_length[CLF] = 1;
-        inst_length[SWBS] = 1;
-        inst_length[RET] = 1;
-        inst_length[IRET] = 1;
-        inst_length[HLT] = 1;
         gettimeofday(&initial,NULL);
     }
     void add_to_clock(std::function<void()> function) {
@@ -457,18 +446,6 @@ class RVM {
                             break;
                         }
                         r[(cachedargs & 0xe0) >> 5] &= r[(cachedargs & 0x1c) >> 2];
-                        break;
-                    case GBP:
-                        r[(cachedargs & 0xe0) >> 5] = baseptr;
-                        break;
-                    case SBP:
-                        if((cachedargs % 2) != 0) {
-                            unsigned int stckval;
-                            stckval = *baseaddr.read32(pc+2);
-                            baseptr = stckval;
-                            break;
-                        }
-                        baseptr = r[(cachedargs & 0xe0) >> 5];
                         break;
                     case GSP:
                         r[(cachedargs & 0xe0) >> 5] = stackptr;
@@ -677,32 +654,6 @@ class RVM {
                         unsigned int stval = r[(cachedargs & 0x1c) >> 2];
                         baseaddr.write(stval, bytes, &r[(cachedargs & 0xe0) >> 5]);
                         break; }
-                    case POP8:
-                        r[(cachedargs & 0xe0) >> 5] = *baseaddr.read8(stackptr);
-                        stackptr += 1;
-                        break;
-                    case POP16:
-                        r[(cachedargs & 0xe0) >> 5] = *baseaddr.read16(stackptr - 1);
-                        stackptr += 2;
-                        break;
-                    case PUSH16:
-                        if((cachedargs % 2) != 0) {
-                            stackptr -= 2;
-                            baseaddr.write(stackptr -1, 2, baseaddr.read16(pc+2));
-                            break;
-                        }
-                        stackptr -= 2;
-                        baseaddr.write(stackptr -1, 2, &r[(cachedargs & 0xe0) >> 5]);
-                        break;
-                    case PUSH8:
-                        if((cachedargs % 2) != 0) {
-                            stackptr -= 1;
-                            baseaddr.write(stackptr, 1, baseaddr.read8(pc+2));
-                            break;
-                        }
-                        stackptr -= 1;
-                        baseaddr.write(stackptr, 1, &r[(cachedargs & 0xe0) >> 5]);
-                        break;
                     default:
                         throw CPUException(ILLEGAL_INSTRUCTION);
                         break;
@@ -763,10 +714,8 @@ class RVM {
     }
     unsigned char interrupt_vector;
     std::bitset<8> flags;
-    unsigned int r[8] = {0,0,0,0,0,0,0,0};
+    unsigned long r[32] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
     std::vector<std::function<void()>> function_list;
-    std::map<int,int> jump_offset;
-    std::map<int,int> inst_length;
     private:
     long breakpoint = -1;
     unsigned long n_inst = 0;
@@ -774,10 +723,9 @@ class RVM {
     int HLTed = false;
     int interrupt = false;
     int interrupts_enabled = true;
-    unsigned int itableptr = 0;
-    unsigned int stackptr = 0;
-    unsigned int baseptr = 0;
-    unsigned int pc = 0;
+    unsigned long itableptr = 0;
+    unsigned long callstackptr = 0;
+    unsigned long pc = 0;
     timeval initial, stop;
 
 };
