@@ -277,6 +277,13 @@ class RGA {
             palette[2].r = 0;
             palette[2].g = 170;
             palette[2].b = 0;
+            palette[3].r = 0;
+            palette[3].g = 170;
+            palette[3].b = 170;
+            palette[4].r = 170;
+            palette[4].g = 0;
+            palette[4].b = 0;
+
         }
         void do_stuff() {
             if(memory[16383] != 0) {
@@ -297,41 +304,6 @@ class RGA {
         SDL_Surface *screen;
         unsigned char* memory;
 };
-
-struct thread {
-    thread(std::function<void()> function) {
-        func = function;
-        go = false;
-        t = std::thread(std::bind(&thread::thread_queue,this));
-    }
-
-    thread(thread&& other) : go(static_cast<bool>(other.go)){
-
-    }
-
-    void thread_queue() {
-        while(true) {
-            if(go) {
-                func();
-                go = false;
-            }
-        }
-    }
-
-    void wait_and_restart() {
-        if(go) {
-            while(go) {}
-            go = true;
-        } else {
-             go = true;
-        }
-    }
-
-    std::function<void()> func;
-    std::thread t;
-    std::atomic<bool> go;
-};
-
 class RVM {
     public:
     RVM(RMMU &mmu) : baseaddr(mmu){
@@ -353,7 +325,7 @@ class RVM {
         gettimeofday(&initial,NULL);
     }
     void add_to_clock(std::function<void()> function) {
-        function_list.push_back(std::move(thread(function)));
+        function_list.push_back(function);
     }
 
     int irq(unsigned char interrupt) {
@@ -370,7 +342,7 @@ class RVM {
         while(1) {
             for(size_t i = 0; i < function_list.size(); i++) {
                 // use this to fake hardware properties and do cool processing stuff
-                function_list[i].wait_and_restart();
+                function_list[i]();
             }
             if(pc == breakpoint) {
                 gettimeofday(&stop,NULL);
@@ -464,16 +436,7 @@ class RVM {
                     }
                     if((baseaddr[pc+1] % 2) != 0) {
                         unsigned int oldpc = pc;
-                        pc = 0;                SDL_Color *palette = new SDL_Color[256];
-                        palette[0].r = 0;
-                        palette[0].g = 0;
-                        palette[0].b = 0;
-                        palette[1].r = 0;
-                        palette[1].g = 0;
-                        palette[1].b = 170;
-                        palette[2].r = 0;
-                        palette[2].g = 170;
-                        palette[2].b = 0;
+                        pc = 0;
                         pc |= (baseaddr[oldpc+2] << 24);
                         pc |= (baseaddr[oldpc+3] << 16);
                         pc |= (baseaddr[oldpc+4] << 8);
@@ -958,7 +921,7 @@ class RVM {
     }
     std::bitset<8> flags;
     unsigned int r[8] = {0,0,0,0,0,0,0,0};
-    std::vector<thread> function_list;
+    std::vector<std::function<void()>> function_list;
     std::map<int,int> jump_offset;
     std::map<int,int> inst_length;
     private:
@@ -1053,7 +1016,7 @@ int main()
     arr[37] = 0x00;
     arr[38] = 0x00;
     arr[39] = 0x06;*/
-    /*std::thread t ([&](){*/rvm.start(true, false);//});
+    /*std::thread t ([&](){*/rvm.start(false, true);//});
     //t.join();
     delete[] arr;
     return 0;
