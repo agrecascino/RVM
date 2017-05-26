@@ -39,6 +39,10 @@
 #define RAPIC_DANCE 1
 #define RAPIC_FAIRY 2
 #define RAPIC_WAIFU 3
+#define int128_t __int128_t
+#define dispatch goto *handlers[inst.split[0] & 0xFE];
+#define fetch         pc += 4; \
+                      inst.full = *baseaddr.read32(pc);
 
 class CPUException : public std::exception {
     public:
@@ -121,67 +125,6 @@ bool WillOverflow(From val) {
   }
 }
 
-enum instructions {
-    ADD = 0,
-    SUB,
-    MUL,
-    DIV,
-    INC,
-    AND,
-    OR,
-    XOR,
-    NOT,
-    JMP,
-    JZ,
-    JO,
-    LD,
-    ST,
-    CLC,
-    CLZ,
-    CALL,
-    RET,
-    INT,
-    HLT,
-    ADC,
-    MOV,
-    PUSH,
-    POP,
-    SSP,
-    GSP,
-    CMP,
-    LIT,
-    CLF,
-    C2S,
-    C2A,
-    C2M,
-    C2D,
-    OUT,
-    IN,
-    DEC,
-    C2I,
-    CDD,
-    SBP,
-    GBP,
-    MOD,
-    CMD,
-    IRET,
-    GFR,
-    SFR,
-    DSI,
-    ENI,
-    LSL,
-    RSL,
-    DSP,
-    DBP,
-    SWBS,
-    POP8,
-    POP16,
-    PUSH8,
-    PUSH16,
-
-    //maybe add a conditional move
-
-};
 struct MemRange {
     MemRange(unsigned int address, unsigned int length) : address(address), length(length) {}
     unsigned long address;
@@ -241,6 +184,10 @@ class RIOMMU {
 
 class RVM;
 
+union instruction {
+    unsigned char split[4];
+    unsigned int full;
+};
 
 class RVM {
     public:
@@ -264,453 +211,21 @@ class RVM {
     }
 
     void start(bool debug, bool silent) {
-        while(1) {
-            if(pc == breakpoint) {
-                gettimeofday(&stop,NULL);
-                std::cout << "Hit breakpoint: pc=" << pc << std::endl;
-                std::cout << stop.tv_sec << ":" << stop.tv_usec << std::endl;
-                std::cout << initial.tv_sec << ":" << initial.tv_usec << std::endl;
-                goto breakhit;
-            }
-            if(debug) {
-                breakhit:
-                std::string action;
-                std::locale ascii;
-                back:
-                std::cout << "Step(s) Peek memory(p) Get current instruction(i) Get number of instructions ran(n) Go(g) Set Breakpoint(b) Quiet(q) [S/r/i/n/g/b/q]" << std::endl;
-                std::getline(std::cin,action);
-                if(action.size() == 0) {
-                    goto step;
-                }
-                char eval_this = std::toupper(action[0],ascii);
-                if(eval_this == 'S') {
-                    goto step;
-                } else if(eval_this == 'P') {
-                    int mvalue = std::stoul(action.substr(1).c_str(),0,10);
-                    std::cout << "The memory at " << mvalue << " is " << *baseaddr.read32(mvalue) << std::endl;
-                    goto back;
-                } else if(eval_this == 'N') {
-                    std::cout << "Number of instructions ran: " << n_inst << std::endl;
-                    goto back;
-                } else if(eval_this == 'I') {
-                    std::cout << "Instruction: " << std::hex  << *baseaddr.read16(pc) << std::dec << std::endl;
-                    goto back;
-                } else if(eval_this == 'G') {
-                    debug = false;
-                    gettimeofday(&initial,NULL);
-                    goto step;
-                } else if(eval_this == 'B') {
-                    std::vector<std::string> output;
-                    split_string(action," ",output);
-                    breakpoint = atoi(output[1].c_str());
-                    goto back;
-                } else if(eval_this == 'Q') {
-                    silent = !silent;
-                    goto back;
-                }
-
-            }
-            step:
-            for(size_t i = 0; i < function_list.size(); i++) {
-                // use this to fake hardware properties and do cool processing stuff
-                function_list[i]();
-            }
-            int halt = false;
-            int jump = false;
-            if(interrupt) {
-                interrupt = false;
-                stackptr -= 4;
-                baseaddr.write(stackptr - 3, 4,&pc);
-                stackptr -= 4;
-                unsigned int flagval = flags.to_ulong();
-                baseaddr.write(stackptr - 3,4, &flagval);
-                jump = true;
-                pc = *baseaddr.read32(itableptr + interrupt_vector);
-                goto irq;
-            }
-            try {
-                unsigned char cachedargs = *baseaddr.read8(pc+1);
-                switch(*baseaddr.read8(pc)) {
-                case MOD:
-                    if((cachedargs % 2) != 0) {
-                        unsigned int modval = 0;
-                        modval = *baseaddr.read32(pc+2);
-                        r[(cachedargs & 0x1c) >> 2] = r[(cachedargs & 0xe0) >> 5] % modval;
-                        break;
-
-                    }
-                    r[(cachedargs & 0x1c) >> 2] = r[(cachedargs & 0xe0) >> 5] % r[(cachedargs & 0x1c) >> 2];
-                    break;
-                case RSL:
-                    if((cachedargs % 2) != 0) {
-                        unsigned int shiftval = 0;
-                        shiftval = *baseaddr.read32(pc+2);
-                        r[(cachedargs & 0xe0) >> 5] = r[(cachedargs & 0xe0) >> 5] >> shiftval;
-                        break;
-                    }
-                    r[(cachedargs & 0xe0) >> 5] = r[(cachedargs & 0xe0) >> 5] >> r[(cachedargs & 0x1c) >> 2];
-                    break;
-                case LSL:
-                    if((cachedargs % 2) != 0) {
-                        unsigned int shiftval = 0;
-                        shiftval = *baseaddr.read32(pc+2);
-                        r[(cachedargs & 0xe0) >> 5] = r[(cachedargs & 0xe0) >> 5] << shiftval;
-                        break;
-                    }
-                    r[(cachedargs & 0xe0) >> 5] = r[(cachedargs & 0xe0) >> 5] << r[(cachedargs & 0x1c) >> 2];
-                    break;
-                case JO:
-                    if(!(flags[1] == 1)) {
-                        break;
-                    }
-                    if((cachedargs % 2) != 0) {
-                        unsigned int oldpc = pc;
-                        pc = 0;
-                        pc = *baseaddr.read32(oldpc+2);
-                        jump = true;
-                        break;
-                    }
-                    jump = true;
-                    pc = r[(cachedargs & 0xe0) >> 5];
-                    break;
-                case C2I: {
-                        int *regptr = (int*)&r[(cachedargs & 0xe0) >> 5];
-                        flags[1] = checked_add(*regptr,1,NULL);
-                        *regptr += 1;
-                    }
-                    break;
-                case CDD: {
-                        int *regptr = (int*)&r[(cachedargs & 0xe0) >> 5];
-                        flags[1] = checked_sub(*regptr,1,NULL);
-                        *regptr -= 1;
-                    }
-                    break;
-                case C2S: {
-                        int *regptr = (int*)&r[(cachedargs & 0xe0) >> 5];
-                        if((cachedargs % 2) != 0) {
-                            int addval;
-                            addval = *baseaddr.read32(pc+2);
-                            flags[1] = checked_sub(*regptr,addval,NULL);
-                            *regptr -= addval;
-                            break;
-                        }
-                        flags[1] = checked_sub(*regptr,*((int*)r[(cachedargs & 0x1c) >> 2]),NULL);
-                        *regptr -= *((int*)r[(cachedargs & 0x1c) >> 2]);
-                    }
-                    break;
-                    case C2A: {
-                            int *regptr = (int*)&r[(cachedargs & 0xe0) >> 5];
-                            if((cachedargs % 2) != 0) {
-                                int addval;
-                                addval = *baseaddr.read32(pc+2);
-                                flags[1] = checked_add(*regptr,addval,NULL);
-                                *regptr += addval;
-                                break;
-                            }
-                            flags[1] = checked_add(*regptr,*((int*)r[(cachedargs & 0x1c) >> 2]),NULL);
-                            *regptr += *((int*)r[(cachedargs & 0x1c) >> 2]);
-                        }
-                        break;
-                    case NOT:
-                        if((cachedargs % 2) != 0) {
-                            unsigned int orval;
-                            orval = *baseaddr.read32(pc+2);
-                            r[(cachedargs & 0xe0) >> 5] = ~orval;
-                            break;
-                        }
-                        r[(cachedargs & 0xe0) >> 5] = ~r[(cachedargs & 0x1c) >> 2];
-                        break;
-                    case XOR:
-                        if((cachedargs % 2) != 0) {
-                            unsigned int orval;
-                            orval = *baseaddr.read32(pc+2);
-                            r[(cachedargs & 0xe0) >> 5] ^= orval;
-                            break;
-                        }
-                        r[(cachedargs & 0xe0) >> 5] ^= r[(cachedargs & 0x1c) >> 2];
-                        break;
-                    case OR:
-                        if((cachedargs % 2) != 0) {
-                            unsigned int orval;
-                            orval = *baseaddr.read32(pc+2);
-                            r[(cachedargs & 0xe0) >> 5] |= orval;
-                            break;
-                        }
-                        r[(cachedargs & 0xe0) >> 5] |= r[(cachedargs & 0x1c) >> 2];
-                        break;
-                    case AND:
-                        if((cachedargs % 2) != 0) {
-                            unsigned int andval;
-                            andval = *baseaddr.read32(pc+2);
-                            r[(cachedargs & 0xe0) >> 5] &= andval;
-                            break;
-                        }
-                        r[(cachedargs & 0xe0) >> 5] &= r[(cachedargs & 0x1c) >> 2];
-                        break;
-                    case GSP:
-                        r[(cachedargs & 0xe0) >> 5] = stackptr;
-                        break;
-                    case ADD:
-                        if((cachedargs % 2) != 0) {
-                            unsigned int addval;
-                            addval = *baseaddr.read32(pc+2);
-                            flags[1] = WillOverflow<unsigned int>((unsigned long)r[(cachedargs & 0xe0) >> 5] + (unsigned long)addval);
-                            r[(cachedargs & 0xe0) >> 5] += addval;
-                            break;
-                        }
-                        flags[1] = WillOverflow<unsigned int>((unsigned long)r[(cachedargs & 0xe0) >> 5] + (unsigned long)r[(cachedargs & 0x1c) >> 2]);
-                        r[(cachedargs & 0xe0) >> 5] += r[(cachedargs & 0x1c) >> 2];
-                        break;
-                    case SUB:
-                        if((cachedargs % 2) != 0) {
-                            unsigned int subval;
-                            subval = *baseaddr.read32(pc+2);
-                            flags[1] = WillOverflow<unsigned int>((long)r[(cachedargs & 0xe0) >> 5] - (long)subval);
-                            r[(cachedargs & 0xe0) >> 5] -= subval;
-                            break;
-                        }
-                        flags[1] = WillOverflow<unsigned int>((long)r[(cachedargs & 0xe0) >> 5] - (long)r[(cachedargs & 0x1c) >> 2]);
-                        r[(cachedargs & 0xe0) >> 5] -= r[(cachedargs & 0x1c) >> 2];
-                        break;
-                    case DSP:
-                        baseptr = stackptr;
-                        break;
-                    case DBP:
-                        stackptr = baseptr;
-                        break;
-                    case SWBS: {
-                        unsigned int stck_dup = stackptr;
-                        unsigned int base_dup = baseptr;
-                        stackptr = base_dup;
-                        baseptr = stck_dup;
-                        break; }
-                    case PUSH:
-                        if((cachedargs % 2) != 0) {
-                            stackptr -= 4;
-                            baseaddr.write(stackptr - 3, 4,baseaddr.read32(pc+2));
-                            break;
-                        }
-                        stackptr -= 4;
-                        baseaddr.write(stackptr - 3, 4, &r[(cachedargs & 0xe0) >> 5]);
-                        break;
-                    case CALL: {
-                        if((cachedargs % 2) != 0) {
-                            unsigned int pc6 = pc+6;
-                            baseaddr.write(stackptr - 3, 4, &pc6);
-                            stackptr -= 4;
-                            pc = *baseaddr.read32(pc+2);
-                            jump = true;
-                            break;
-                        }
-                        unsigned int pc2= pc+2;
-                        baseaddr.write(stackptr - 3, 4, &pc2);
-                        pc = r[(cachedargs & 0xe0) >> 5];
-                        stackptr -= 4;
-                        jump = true;
-                        break; }
-                    case RET:
-                        pc = *baseaddr.read32(stackptr - 3);
-                        stackptr += 4;
-                        jump = true;
-                        break;
-                    case POP:
-                        if(!silent)
-                            std::cout << (unsigned long)(stackptr) << std::endl;
-                        r[(cachedargs & 0xe0) >> 5] = *baseaddr.read32(stackptr - 3);
-                        //r[(cachedargs & 0xe0) >> 5] = (*baseaddr.read8(stackptr - (stackdepth*4) + 3] << 24) | (*baseaddr.read8(stackptr - (stackdepth*4) + 2] << 16) | (*baseaddr.read8(stackptr - (stackdepth*4) + 1] << 8) | *baseaddr.read8(stackptr - (stackdepth*4)];
-                        stackptr += 4;
-                        break;
-                    case SSP:
-                        if((cachedargs % 2) != 0) {
-                            unsigned int stckval;
-                            stckval = *baseaddr.read32(pc+2);
-                            stackptr = stckval;
-                            break;
-                        }
-                        stackptr = r[(cachedargs & 0xe0) >> 5];
-                        break;
-                    case DEC:
-                        r[(cachedargs & 0xe0) >> 5]--;
-                        break;
-                    case CLF:
-                        flags = 0;
-                        break;
-                    case CMP:
-                        if((cachedargs % 2) != 0) {
-                            unsigned int cmpval;
-                            cmpval = *baseaddr.read32(pc+2);
-                            flags[0] = r[(cachedargs & 0xe0) >> 5] == cmpval;
-                            break;
-                        }
-                        flags[0] = r[(cachedargs & 0xe0) >> 5] == r[(cachedargs & 0x1c) >> 2];
-                        break;
-                    case JZ:
-                        if(!(flags[0] == 1)) {
-                            break;
-                        }
-                        if((cachedargs % 2) != 0) {
-                            unsigned long oldpc = pc;
-                            pc = *baseaddr.read32(oldpc+2);
-                            jump = true;
-                            break;
-                        }
-                        jump = true;
-                        pc = r[(cachedargs & 0xe0) >> 5];
-                        break;
-
-
-                    case JMP:
-                        if((cachedargs % 2) != 0) {
-                            unsigned long oldpc = pc;
-                            pc = *baseaddr.read32(oldpc+2);
-                            jump = true;
-                            break;
-                        }
-                        jump = true;
-                        pc = r[(cachedargs & 0xe0) >> 5];
-                        break;
-                    case MOV:
-                        if((cachedargs % 2) != 0) {
-                            std::cout << std::hex << baseaddr.read32(pc + 2) << std::dec << std::endl;
-                            r[(cachedargs & 0xe0) >> 5] = *baseaddr.read32(pc + 2);
-                            break;
-                        }
-                        r[(cachedargs & 0xe0) >> 5] = r[(cachedargs & 0x1c) >> 2];
-                        break;
-                    case INC:
-                        r[(cachedargs & 0xe0) >> 5]++;
-                        break;
-                    case HLT:
-                        halt = true;
-                        break;
-                    case LIT:
-                        if((cachedargs % 2) != 0) {
-                            itableptr = *baseaddr.read32(pc+2);
-                            break;
-                        }
-                        itableptr = r[(cachedargs & 0x1c) >> 2];
-                        break;
-                    case INT: {
-                        if((cachedargs % 2) != 0) {
-                            stackptr -= 4;
-                            unsigned int pc3 = pc + 3;
-                            baseaddr.write(stackptr - 3, 4, &pc3);
-                            stackptr -= 4;
-                            unsigned int flagval = flags.to_ulong();
-                            baseaddr.write(stackptr - 3,4, &flagval);
-                            jump = true;
-                            pc = *baseaddr.read32(itableptr + interrupt + *baseaddr.read8(pc+2));
-                            break;
-                        }
-                        stackptr -= 4;
-                        unsigned int pc2 = pc + 2;
-                        baseaddr.write(stackptr - 3, 4, &pc2);
-                        stackptr -= 4;
-                        unsigned int flagval = flags.to_ulong();
-                        baseaddr.write(stackptr - 3,4, &flagval);
-                        jump = true;
-                        pc = *baseaddr.read32(itableptr + r[(cachedargs & 0x1c) >> 2]);
-                        break; }
-                    case IRET: {
-                        flags = std::bitset<8>(*baseaddr.read32(stackptr - 3));
-                        stackptr += 4;
-                        pc = baseaddr.read32(stackptr - 3);
-                        stackptr += 4;
-                        jump = true;
-                        break; }
-                    case LD: {
-                        unsigned int bytes = (cachedargs & 0x03);
-                        if(bytes == 2) {
-                            throw CPUException(ILLEGAL_INSTRUCTION);
-                        }
-                        if(!silent) {
-                            std::cout << r[(cachedargs & 0x1c) >> 2] << std::endl;
-                            std::cout << ((cachedargs & 0x1c) >> 2) << std::endl;
-                        }
-                        unsigned int stval = r[(cachedargs & 0x1c) >> 2];
-                        r[(cachedargs & 0xe0) >> 5] = 0;
-                        switch(bytes) {
-                        case 0:
-                            r[(cachedargs & 0xe0) >> 5] = *baseaddr.read8(stval);
-                            break;
-                        case 1:
-                            r[(cachedargs & 0xe0) >> 5] = *baseaddr.read16(stval);
-                            break;
-                        case 3:
-                            r[(cachedargs & 0xe0) >> 5] = *baseaddr.read32(stval);
-                            break;
-                        }
-                        break; }
-                    case ST: {
-                        unsigned int bytes = (cachedargs & 0x03);
-                        if(bytes == 2) {
-                            throw CPUException(ILLEGAL_INSTRUCTION);
-                        }
-                        if(!silent) {
-                            std::cout << "storing to " << std::endl;
-                            std::cout << r[(cachedargs & 0x1c) >> 2] << std::endl;
-                            std::cout << ((cachedargs & 0x1c) >> 2) << std::endl;
-                        }
-                        unsigned int stval = r[(cachedargs & 0x1c) >> 2];
-                        baseaddr.write(stval, bytes, &r[(cachedargs & 0xe0) >> 5]);
-                        break; }
-                    default:
-                        throw CPUException(ILLEGAL_INSTRUCTION);
-                        break;
-
-
-                }
-            } catch(const CPUException &exception) {
-                stackptr -= 4;
-                baseaddr.write(stackptr - 3, 4, &pc);
-                stackptr -= 4;
-                unsigned int flagval = flags.to_ulong();
-                baseaddr.write(stackptr - 3,4, &flagval);
-                jump = true;
-                pc = *baseaddr.read32(itableptr + exception.getExceptionType());
-            }
-
-            n_inst++;
-            if(!silent) {
-                std::cout << n_inst << std::endl;
-                std::cout << "Base pointer location:" << baseptr << std::endl;
-                std::cout << "Current stack location:" << stackptr << std::endl;
-
-                /*
-                if(baseptr != 0) {
-                    for(size_t i =0; i <= (stackptr - baseptr);i++) {
-                        std::cout << (unsigned long)(baseaddr + stackptr - i) << std::endl;
-                        std::cout << (unsigned int)(*baseaddr.read8(stackptr - i]) << std::endl;
-                    }
-                }
-                */
-                std::cout << "Registers: ";
-                for(int i =0;i < 8;i++) {
-                    std::cout << r[i];
-                    if(i != 7)
-                        std::cout << ":";
-                }
-                std::cout << std::endl;
-                std::cout << "Program Counter: " << pc << std::endl;
-            }
-            if(halt) {
-                if(!silent)
-                    std::cout << "Halting." << std::endl;
-                HLTed = true;
-                break;
-            } else if (jump) {
-                irq:
-                if(!silent)
-                    std::cout << "Jumping to: " << pc << std::endl;
-                continue;
-            }
-            if(((*baseaddr.read8(pc+1) % 2) != 0) && !(inst_length[*baseaddr.read8(pc)] == 1)) {
-                pc += jump_offset[*baseaddr.read8(pc)];
-                continue;
-            }
-
-            pc += inst_length[*baseaddr.read8(pc)];
-        }
+        instruction inst;
+        inst.full = *baseaddr.read32(pc);
+        static void* handlers[] = { &&thing, &&thing2, &&thing3 };
+        dispatch
+        add:
+        fetch
+        dispatch
+        thing2:
+        fetch
+        dispatch
+        thing3:
+        fetch
+        dispatch
+        interrupt:
+        dispatch
     }
     unsigned char interrupt_vector;
     std::bitset<8> flags;
@@ -720,7 +235,6 @@ class RVM {
     long breakpoint = -1;
     unsigned long n_inst = 0;
     RMMU &baseaddr;
-    int HLTed = false;
     int interrupt = false;
     int interrupts_enabled = true;
     unsigned long itableptr = 0;
