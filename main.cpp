@@ -213,9 +213,9 @@ class RVM {
     void start(bool debug, bool silent) {
         instruction inst;
         inst.full = *baseaddr.read32(pc);
-        static void* handlers[] = { &&thing, &&thing2, &&thing3 };
+        static void* handlers[] = { &&privcode, &&reserved, &&reserved };
         dispatch
-        add:
+        privcode:
         fetch
         dispatch
         thing2:
@@ -225,6 +225,8 @@ class RVM {
         fetch
         dispatch
         interrupt:
+        dispatch
+        reserved:
         dispatch
     }
     unsigned char interrupt_vector;
