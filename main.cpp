@@ -27,23 +27,25 @@
 #include <SDL/SDL_ttf.h>
 #include <math.h>
 #include <semaphore.h>
-#define STORE32C 3
-#define STORE32 2
-#define STORE16 1
-#define STORE8 0
-#define MAX INT32_MAX
-#define MIN INT32_MIN
+#define MAX64 INT64_MAX
+#define MIN64 INT64_MIN
+#define MAX32 INT32_MAX
+#define MIN32 INT32_MIN
 #define ILLEGAL_INSTRUCTION 0
 #define PERMISSION_EXCEPTION 1
+#define ALIGNMENT_EXCEPTION 2
+#define OVERFLOW_EXCEPTION 3
 #define RAPIC_EOI 4
-#define RAPIC_DANCE 1
-#define RAPIC_FAIRY 2
-#define RAPIC_WAIFU 3
 #define int128_t __int128_t
 #define dispatch goto *handlers[inst.split[0] & 0xFE];
 #define fetch         pc += 4; \
-                      inst.full = *baseaddr.read32(pc);
-
+                      inst.full = *mmu.read32(pc);
+#define getra ((inst.split[0] & 0x01) | ((inst.split[0] & 0xF0) >> 3))
+#define getrb ((inst.split[3] & 0x80 >> 7) | ((inst.split[0] & 0x0F) << 1))
+#define getrc (inst.split[4] & 0b00011111)
+#define getdisp (unsigned short)((inst.split[3] & 0b01111111) << 9) | (unsigned short)((inst.split[4]) << 1)
+#define getintegerfunction (unsigned short)((inst.split[3] & 0b00000111 << 3) | (inst.split[4] & 0b11100000 >> 5) )
+#define getliteral (((inst.split[2] & 0b00011111) << 3) | ((inst.split[3] & 0b11100000) >> 5))
 class CPUException : public std::exception {
     public:
     CPUException(int exception_type) {
@@ -70,59 +72,32 @@ void split_string(std::string const &k, std::string const &delim, std::vector<st
     output.emplace_back(last_ptr);
 }
 
+int checked_add_32(int64_t a, int64_t b, int64_t *rp) {
+  int128_t lr = (int64_t)a + (int64_t)b;
+  if(rp != NULL)
+      *rp = lr;
+  return lr > MAX32 || lr < MIN32;
+}
 
-int checked_add(int64_t a, int64_t b, int64_t *rp) {
+int checked_sub_32(int64_t a, int64_t b, int64_t *rp) {
+  int128_t lr = (int64_t)a - (int64_t)b;
+  if(rp != NULL)
+    *rp = lr;
+  return lr > MAX32 || lr < MIN32;
+}
+
+int checked_add_64(int64_t a, int64_t b, int64_t *rp) {
   int128_t lr = (int128_t)a + (int128_t)b;
   if(rp != NULL)
       *rp = lr;
-  return lr > MAX || lr < MIN;
+  return lr > MAX64 || lr < MIN64;
 }
 
-int checked_sub(int64_t a, int64_t b, int64_t *rp) {
+int checked_sub_64(int64_t a, int64_t b, int64_t *rp) {
   int128_t lr = (int128_t)a - (int128_t)b;
   if(rp != NULL)
     *rp = lr;
-  return lr > MAX || lr < MIN;
-}
-
-template<bool is_signed, typename T>
-class IsNegativeFunctor;
-
-template<typename T>
-class IsNegativeFunctor<true, T> {
- public:
-  bool operator()(T x) {
-    return x < 0;
-  }
-};
-
-template<typename T>
-class IsNegativeFunctor<false, T> {
- public:
-  bool operator()(T x) {
-    // Unsigned type is never negative.
-    return false;
-  }
-};
-
-template<typename T>
-bool IsNegative(T x) {
-  return IsNegativeFunctor<std::numeric_limits<T>::is_signed, T>()(x);
-}
-
-template<typename To, typename From>
-bool WillOverflow(From val) {
-  assert(std::numeric_limits<From>::is_integer);
-  assert(std::numeric_limits<To>::is_integer);
-  if (std::numeric_limits<To>::is_signed) {
-    return (!std::numeric_limits<From>::is_signed &&
-              (uintmax_t)val > (uintmax_t)INTMAX_MAX) ||
-           (intmax_t)val < (intmax_t)std::numeric_limits<To>::min() ||
-           (intmax_t)val > (intmax_t)std::numeric_limits<To>::max();
-  } else {
-    return IsNegative(val) ||
-           (uintmax_t)val > (uintmax_t)std::numeric_limits<To>::max();
-  }
+  return lr > MAX64 || lr < MIN64;
 }
 
 struct MemRange {
@@ -154,6 +129,27 @@ class RMMU {
         return (unsigned long*)(baseaddr + offset);
     }
 
+    unsigned short* read16wa(unsigned int offset) {
+            if((offset % 2)) {
+                throw CPUException(ALIGNMENT_EXCEPTION);
+            }
+        return (unsigned short*)(baseaddr + offset);
+    }
+
+    unsigned int* read32wa(unsigned int offset) {
+            if((offset % 4)) {
+                throw CPUException(ALIGNMENT_EXCEPTION);
+            }
+        return (unsigned int*)(baseaddr + offset);
+    }
+
+    unsigned long* read64wa(unsigned int offset) {
+            if((offset % 8)) {
+                throw CPUException(ALIGNMENT_EXCEPTION);
+            }
+        return (unsigned long*)(baseaddr + offset);
+    }
+
     void write(unsigned int assign, unsigned int length, void* val) {
         //unsigned char endian[length];
         //for(int i = length - 1;i <= 0;i--) {
@@ -161,16 +157,18 @@ class RMMU {
         //}
         memcpy((baseaddr + assign),&val,length);
     }
-    /*
-    unsigned char* safecopy(unsigned int length, void* dest, void* src) {
-        return baseaddr;
+
+
+    void writewa(unsigned int assign, unsigned int length, void* val) {
+        if(assign % length) {
+            throw CPUException(ALIGNMENT_EXCEPTION);
+        }
+        memcpy((baseaddr + assign),&val,length);
     }
-    */
 
     void map(MemRange mrange,std::function<void(unsigned int, unsigned int, bool)> &func) {
         //maps[mrange] = func;
     }
-
 
     private:
     //std::map<MemRange,std::function<void(unsigned int, unsigned int, bool)>> maps;
@@ -180,7 +178,20 @@ class RMMU {
 class RIOMMU {
 
 };
+template <class type,int size> class RegisterBank {
+public:
+    RegisterBank() {
+        for(int i = 0; i < size; i++) {
+            registers[i] = 0;
+        }
+        zero = 0;
+    }
 
+    type& operator[](std::size_t id) { zero = 0; if(id == (size - 1)) { return zero; } return registers[id]; }
+private:
+    type zero;
+    type registers[size];
+};
 
 class RVM;
 
@@ -189,9 +200,31 @@ union instruction {
     unsigned int full;
 };
 
+long sign_extend_32(int var) {
+    long value = (0x00000000FFFFFFFF & var);
+    long mask =  (0x0000000080000000);
+    if(mask & var) {
+        value += 0xFFFFFFFF00000000;
+    }
+    return value;
+    //i have no idea if this'll work
+    //check it later doofus
+}
+
+long sign_extend(short var) {
+    short value = (0x7FFF & var);
+    long mask =  (0x0000000000004000);
+    if(mask & var) {
+        value += 0xFFFFFFFFFFFF8000;
+    }
+    return value;
+    //i have no idea if this'll work
+    //check it later doofus
+}
+
 class RVM {
     public:
-    RVM(RMMU &mmu) : baseaddr(mmu){
+    RVM(RMMU &mmu) : mmu(mmu){
         gettimeofday(&initial,NULL);
     }
     void add_to_clock(std::function<void()> function) {
@@ -212,36 +245,254 @@ class RVM {
 
     void start(bool debug, bool silent) {
         instruction inst;
-        inst.full = *baseaddr.read32(pc);
-        static void* handlers[] = { &&privcode, &&reserved, &&reserved };
+        inst.full = *mmu.read32(pc);
+        static void* handlers[] = { &&privcode, &&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&loadaddress,&&loadaddresshigh,&&loadbyteunsigned,&&loadquadwordunaligned };
+        startover:
+        try {
         dispatch
         privcode:
         fetch
         dispatch
-        thing2:
+        loadaddress:
+        r[getra] = r[getrb] + sign_extend(getdisp);
         fetch
         dispatch
-        thing3:
+        loadaddresshigh:
+        //disp is reduced to 15 bits
+        //this probably means something for this instruction
+        r[getra] = r[getrb] + sign_extend(getdisp * 32768);
+        fetch
+        dispatch
+        loadbyteunsigned:
+        r[getra]= *mmu.read8(r[getrb] + sign_extend(getdisp));
+        fetch
+        dispatch
+        loadquadwordunaligned:
+        r[getra]= *mmu.read64((r[getrb] + sign_extend(getdisp)) & ~7);
+        fetch
+        dispatch
+        loadwordunsigned:
+        r[getra] = *mmu.read16wa(r[getrb] + sign_extend(getdisp));
+        fetch
+        dispatch
+        storeword:
+        mmu.writewa(r[getrb] + sign_extend(getdisp),2,&r[getra]);
+        fetch
+        dispatch
+        storebyte:
+        mmu.writewa(r[getrb] + sign_extend(getdisp),1,&r[getra]);
+        fetch
+        dispatch
+        storequadwordunaligned:
+        mmu.write(r[getrb] + sign_extend(getdisp),8,&r[getra]);
+        fetch
+        dispatch
+        arithmetic10:
+        static void *jumplist[64] = {&&addl, &&reserved,&&reserved,&&s4addl,&&reserved,&&reserved,&&subl,&&reserved,&&reserved,&&s4subl,&&reserved,&&reserved,&&s8addl,&&reserved,&&reserved,&&cmpult,&&reserved,&&reserved,&&addq,&&reserved,&&reserved,&&s4addq,&&reserved,&&reserved,&&subq,&&reserved,&&reserved,&&s4subq,&&reserved,&&reserved,&&cmpeq,&&reserved,&&reserved,&&s8addq,&&reserved,&&reserved,&&s8subq,&&reserved,&&reserved,&&cmpule,&&reserved,&&reserved,&&addlv,&&reserved,&&reserved,&&sublv,&&reserved,&&reserved,&&cmplt,&&reserved,&&reserved,&&addqv,&&reserved,&&reserved,&&subqv,&&reserved,&&reserved,&&cmple};
+        goto *jumplist[getintegerfunction];
+        addl:
+        if(std::bitset<32>(inst.full)[19] == 1) {
+            unsigned long literal = getliteral;
+            r[getrc] = sign_extend_32(r[getra] + literal);
+            fetch
+            dispatch
+        }
+        r[getrc] = sign_extend_32(r[getra] + r[getrb]);
+        fetch
+        dispatch
+        s4addl:
+        if(std::bitset<32>(inst.full)[19] == 1) {
+            unsigned long literal = getliteral;
+            r[getrc] = sign_extend_32((r[getra] << 2) + literal);
+            fetch
+            dispatch
+        }
+        r[getrc] = sign_extend_32((r[getra] << 2) + r[getrb]);
+        fetch
+        dispatch
+        subl:
+        if(std::bitset<32>(inst.full)[19] == 1) {
+             unsigned long literal = getliteral;
+             r[getrc] = sign_extend_32(r[getra] - literal);
+             fetch
+             dispatch
+        }
+        r[getrc] = sign_extend_32(r[getra] - r[getrb]);
+        fetch
+        dispatch
+        s4subl:
+        if(std::bitset<32>(inst.full)[19] == 1) {
+             unsigned long literal = getliteral;
+             r[getrc] = sign_extend_32((r[getra] << 2) - literal);
+             fetch
+             dispatch
+        }
+        r[getrc] = sign_extend_32((r[getra] << 2) - r[getrb]);
+        fetch
+        dispatch
+        cmpbge: {
+        unsigned long compareval = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
+        std::bitset<8> bits;
+        for(int i = 0; i < 8;i++) {
+            bool compare = ((unsigned char)(r[getra] >> i*8)) >= ((unsigned char)(compareval >> i*8));
+            bits[i] = compare;
+        }
+        r[getrc] = bits.to_ulong();
+        }
+        fetch
+        dispatch
+        s8addl:
+        if(std::bitset<32>(inst.full)[19] == 1) {
+            unsigned long literal = getliteral;
+            r[getrc] = sign_extend_32((r[getra] << 3) + literal);
+            fetch
+            dispatch
+        }
+        r[getrc] = sign_extend_32((r[getra] << 3) + r[getrb]);
+        fetch
+        dispatch
+        s8subl:
+        if(std::bitset<32>(inst.full)[19] == 1) {
+             unsigned long literal = getliteral;
+             r[getrc] = sign_extend_32((r[getra] << 3) - literal);
+             fetch
+             dispatch
+        }
+        r[getrc] = sign_extend_32((r[getra] << 3) - r[getrb]);
+        fetch
+        dispatch
+        cmpult: {
+        unsigned long compareval = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
+        r[getrc] = (r[getra] < compareval);
+        }
+        fetch
+        dispatch
+        addq: {
+        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
+        r[getrc] = r[getra] + val;
+        }
+        fetch
+        dispatch
+        s4addq: {
+        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
+        r[getrc] = (r[getra] << 2) + val;
+        }
+        fetch
+        dispatch
+        subq: {
+        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
+        r[getrc] = r[getra] - val;
+        }
+        fetch
+        dispatch
+        s4subq: {
+        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
+        r[getrc] = (r[getra] << 2) - val;
+        }
+        fetch
+        dispatch
+        cmpeq: {
+        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
+        r[getrc] = (r[getra] == val);
+        }
+        fetch
+        dispatch
+        s8addq: {
+        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
+        r[getrc] = (r[getra] << 3) + val;
+        }
+        fetch
+        dispatch
+        s8subq: {
+        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
+        r[getrc] = (r[getra] << 3) - val;
+        }
+        fetch
+        dispatch
+        cmpule:  {
+        unsigned long compareval = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
+        r[getrc] = (r[getra] <= compareval);
+        }
+        fetch
+        dispatch
+        addlv: {
+        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral : r[getrb];
+        r[getrc] = sign_extend_32(r[getra] + val);
+        if(!checked_add_32(r[getra],val,NULL))
+            throw CPUException(OVERFLOW_EXCEPTION);
+        }
+        fetch
+        dispatch
+        sublv: {
+        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral : r[getrb];
+        r[getrc] = sign_extend_32(r[getra] - val);
+        if(!checked_sub_32(r[getra],val,NULL))
+            throw CPUException(OVERFLOW_EXCEPTION);
+        }
+        fetch
+        dispatch
+        cmplt: {
+        long val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral : *(long*)(&r[0] + getrb);
+        r[getrc] = *(long*)(&r[0] + getra) < val;
+        }
+        fetch
+        dispatch
+        addqv: {
+        long val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral : r[getrb];
+        r[getrc] = r[getra] + val;
+        if(!checked_add_64(r[getra],val,NULL))
+            throw CPUException(OVERFLOW_EXCEPTION);
+        }
+        fetch
+        dispatch
+        subqv: {
+        long val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral : r[getrb];
+        r[getrc] = r[getra] - val;
+        if(!checked_sub_64(r[getra],val,NULL))
+            throw CPUException(OVERFLOW_EXCEPTION);
+        }
+        fetch
+        dispatch
+        cmple: {
+        long val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral :  *(long*)(&r[0] + getrb);
+        r[getrc] = *(long*)(&r[0] + getra) <= val;
+        }
         fetch
         dispatch
         interrupt:
+        //how to handle interrupts(hopefully):
+        //realtime signal runs, which copies &&interrupt into all handler slots
+        //this allows us to save cycles by not checking for interrupts
+        //ever
+        //i have no idea if this will work
         dispatch
         reserved:
+        //UNPREDICTABLE, doesn't generate exception, but doesn't change operating state
+        //this technically allows for implementations that trash registers in the case of a
+        //reserved opcode
+        //we aren't evil, just continue on as usual
+        fetch
         dispatch
+        } catch(CPUException &except) {
+            std::cout << "Caught CPU Exception, halting... type=" << except.getExceptionType() << std::endl;
+            //goto startover;
+            //this jump will restart dispatch, and put the cpu back into """normal""" operation
+        }
     }
     unsigned char interrupt_vector;
     std::bitset<8> flags;
-    unsigned long r[32] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+    RegisterBank<unsigned long, 32> r;
     std::vector<std::function<void()>> function_list;
     private:
     long breakpoint = -1;
     unsigned long n_inst = 0;
-    RMMU &baseaddr;
+    RMMU &mmu;
     int interrupt = false;
     int interrupts_enabled = true;
     unsigned long itableptr = 0;
     unsigned long callstackptr = 0;
     unsigned long pc = 0;
+    unsigned long savedpc = 0;
     timeval initial, stop;
 
 };
