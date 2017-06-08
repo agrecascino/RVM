@@ -246,7 +246,7 @@ class RVM {
     void start(bool debug, bool silent) {
         instruction inst;
         inst.full = *mmu.read32(pc);
-        static void* handlers[] = { &&privcode, &&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&loadaddress,&&loadaddresshigh,&&loadbyteunsigned,&&loadquadwordunaligned };
+        static void* handlers[] = { &&privcode, &&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&loadaddress,&&loadaddresshigh,&&loadbyteunsigned,&&loadquadwordunaligned,&&storeword,&&storebyte,&&storequadwordunaligned,&&arithmetic10 };
         startover:
         try {
         dispatch
