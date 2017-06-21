@@ -459,6 +459,35 @@ class RVM {
         }
         fetch
         dispatch
+        bitops:
+        int val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral : r[getrb];
+        static void *handlersl2[64] = {&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved};
+        goto *handlersl2[getintegerfunction];
+        and:
+        r[getrc] = r[getra] & val;
+        fetch
+        dispatch
+        bis:
+        r[getrc] = r[getra] | val;
+        fetch
+        dispatch
+        xor:
+        r[getrc] = r[getra] ^ val;
+        fetch
+        dispatch
+        eqv:
+        r[getrc] = r[getra] ^ ~val;
+        fetch
+        dispatch
+        ornot:
+        r[getrc] = r[getra] | ~val;
+        fetch
+        dispatch
+        bic:
+        r[getrc] = r[getra] & ~val;
+        fetch
+        dispatch
+
         interrupt:
         //how to handle interrupts(hopefully):
         //realtime signal runs, which copies &&interrupt into all handler slots
