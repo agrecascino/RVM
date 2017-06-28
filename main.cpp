@@ -37,15 +37,19 @@
 #define OVERFLOW_EXCEPTION 3
 #define RAPIC_EOI 4
 #define int128_t __int128_t
-#define dispatch goto *handlers[inst.split[0] & 0xFE];
 #define fetch         pc += 4; \
+    for(int i = 0; i < 32;i++) { std::cout << ":" << r[i];} \
+                        std::cout << std::endl;\
                       inst.full = *mmu.read32(pc);
 #define getra ((inst.split[0] & 0x01) | ((inst.split[0] & 0xF0) >> 3))
 #define getrb ((inst.split[3] & 0x80 >> 7) | ((inst.split[0] & 0x0F) << 1))
 #define getrc (inst.split[4] & 0b00011111)
-#define getdisp (unsigned short)((inst.split[3] & 0b01111111) << 9) | (unsigned short)((inst.split[4]) << 1)
+#define getdisp (unsigned short)((inst.split[3] & 0b01111111) << 9) | (unsigned short)((inst.split[3]) << 1)
 #define getintegerfunction (unsigned short)((inst.split[3] & 0b00000111 << 3) | (inst.split[4] & 0b11100000 >> 5) )
-#define getliteral (((inst.split[2] & 0b00011111) << 3) | ((inst.split[3] & 0b11100000) >> 5))
+#define getliteral ((unsigned char)((inst.full & 0b00000000000011111111000000000000) >> 12))
+#define dispatch std::cout << "dispatching handler :" << ((inst.full & 0b11111110000000000000000000000000) >> 25) << std::endl;\
+                    std::cout << std::bitset<32>(inst.full) << " " << (int)getliteral << std::endl; \
+                    goto *handlers[(inst.full & 0b11111110000000000000000000000000) >> 25];
 class CPUException : public std::exception {
     public:
     CPUException(int exception_type) {
@@ -245,11 +249,13 @@ class RVM {
 
     void start(bool debug, bool silent) {
         instruction inst;
-        inst.full = *mmu.read32(pc);
-        static void* handlers[] = { &&privcode, &&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&loadaddress,&&loadaddresshigh,&&loadbyteunsigned,&&loadquadwordunaligned,&&storeword,&&storebyte,&&storequadwordunaligned,&&arithmetic10 };
+        inst.full = __bswap_32(*mmu.read32(pc));
+        static void* handlers[] = { &&privcode, &&stop,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&loadaddress,&&loadaddresshigh,&&loadbyteunsigned,&&loadquadwordunaligned,&&storeword,&&storebyte,&&storequadwordunaligned,&&arithmetic10 };
         startover:
         try {
-        dispatch
+            dispatch
+        stop:
+            exit(-1);
         privcode:
         fetch
         dispatch
@@ -288,53 +294,29 @@ class RVM {
         fetch
         dispatch
         arithmetic10:
+        unsigned long val = (std::bitset<32>(inst.full)[20] == 1) ? (getliteral) : r[(getrb)];
         static void *jumplist[64] = {&&addl, &&reserved,&&reserved,&&s4addl,&&reserved,&&reserved,&&subl,&&reserved,&&reserved,&&s4subl,&&reserved,&&reserved,&&s8addl,&&reserved,&&reserved,&&cmpult,&&reserved,&&reserved,&&addq,&&reserved,&&reserved,&&s4addq,&&reserved,&&reserved,&&subq,&&reserved,&&reserved,&&s4subq,&&reserved,&&reserved,&&cmpeq,&&reserved,&&reserved,&&s8addq,&&reserved,&&reserved,&&s8subq,&&reserved,&&reserved,&&cmpule,&&reserved,&&reserved,&&addlv,&&reserved,&&reserved,&&sublv,&&reserved,&&reserved,&&cmplt,&&reserved,&&reserved,&&addqv,&&reserved,&&reserved,&&subqv,&&reserved,&&reserved,&&cmple};
         goto *jumplist[getintegerfunction];
         addl:
-        if(std::bitset<32>(inst.full)[19] == 1) {
-            unsigned long literal = getliteral;
-            r[getrc] = sign_extend_32(r[getra] + literal);
-            fetch
-            dispatch
-        }
-        r[getrc] = sign_extend_32(r[getra] + r[getrb]);
+        r[getrc] = sign_extend_32(r[getra] + val);
         fetch
         dispatch
         s4addl:
-        if(std::bitset<32>(inst.full)[19] == 1) {
-            unsigned long literal = getliteral;
-            r[getrc] = sign_extend_32((r[getra] << 2) + literal);
-            fetch
-            dispatch
-        }
-        r[getrc] = sign_extend_32((r[getra] << 2) + r[getrb]);
+        r[getrc] = sign_extend_32((r[getra] << 2) + val);
         fetch
         dispatch
         subl:
-        if(std::bitset<32>(inst.full)[19] == 1) {
-             unsigned long literal = getliteral;
-             r[getrc] = sign_extend_32(r[getra] - literal);
-             fetch
-             dispatch
-        }
-        r[getrc] = sign_extend_32(r[getra] - r[getrb]);
+        r[getrc] = sign_extend_32(r[getra] - val);
         fetch
         dispatch
         s4subl:
-        if(std::bitset<32>(inst.full)[19] == 1) {
-             unsigned long literal = getliteral;
-             r[getrc] = sign_extend_32((r[getra] << 2) - literal);
-             fetch
-             dispatch
-        }
-        r[getrc] = sign_extend_32((r[getra] << 2) - r[getrb]);
+        r[getrc] = sign_extend_32((r[getra] << 2) - val);
         fetch
         dispatch
         cmpbge: {
-        unsigned long compareval = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
         std::bitset<8> bits;
         for(int i = 0; i < 8;i++) {
-            bool compare = ((unsigned char)(r[getra] >> i*8)) >= ((unsigned char)(compareval >> i*8));
+            bool compare = ((unsigned char)(r[getra] >> i*8)) >= ((unsigned char)(val >> i*8));
             bits[i] = compare;
         }
         r[getrc] = bits.to_ulong();
@@ -342,81 +324,59 @@ class RVM {
         fetch
         dispatch
         s8addl:
-        if(std::bitset<32>(inst.full)[19] == 1) {
-            unsigned long literal = getliteral;
-            r[getrc] = sign_extend_32((r[getra] << 3) + literal);
-            fetch
-            dispatch
-        }
-        r[getrc] = sign_extend_32((r[getra] << 3) + r[getrb]);
+        r[getrc] = sign_extend_32((r[getra] << 3) + val);
         fetch
         dispatch
         s8subl:
-        if(std::bitset<32>(inst.full)[19] == 1) {
-             unsigned long literal = getliteral;
-             r[getrc] = sign_extend_32((r[getra] << 3) - literal);
-             fetch
-             dispatch
-        }
-        r[getrc] = sign_extend_32((r[getra] << 3) - r[getrb]);
+        r[getrc] = sign_extend_32((r[getra] << 3) - val);
         fetch
         dispatch
         cmpult: {
-        unsigned long compareval = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
-        r[getrc] = (r[getra] < compareval);
+        r[getrc] = (r[getra] < val);
         }
         fetch
         dispatch
         addq: {
-        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
         r[getrc] = r[getra] + val;
         }
         fetch
         dispatch
         s4addq: {
-        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
         r[getrc] = (r[getra] << 2) + val;
         }
         fetch
         dispatch
         subq: {
-        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
         r[getrc] = r[getra] - val;
         }
         fetch
         dispatch
         s4subq: {
-        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
         r[getrc] = (r[getra] << 2) - val;
         }
         fetch
         dispatch
         cmpeq: {
-        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
         r[getrc] = (r[getra] == val);
         }
         fetch
         dispatch
         s8addq: {
-        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
         r[getrc] = (r[getra] << 3) + val;
         }
         fetch
         dispatch
         s8subq: {
-        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
         r[getrc] = (r[getra] << 3) - val;
         }
         fetch
         dispatch
         cmpule:  {
-        unsigned long compareval = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
-        r[getrc] = (r[getra] <= compareval);
+        r[getrc] = (r[getra] <= val);
         }
         fetch
         dispatch
         addlv: {
-        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral : r[getrb];
         r[getrc] = sign_extend_32(r[getra] + val);
         if(!checked_add_32(r[getra],val,NULL))
             throw CPUException(OVERFLOW_EXCEPTION);
@@ -424,7 +384,6 @@ class RVM {
         fetch
         dispatch
         sublv: {
-        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral : r[getrb];
         r[getrc] = sign_extend_32(r[getra] - val);
         if(!checked_sub_32(r[getra],val,NULL))
             throw CPUException(OVERFLOW_EXCEPTION);
@@ -432,13 +391,11 @@ class RVM {
         fetch
         dispatch
         cmplt: {
-        long val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral : *(long*)(&r[0] + getrb);
-        r[getrc] = *(long*)(&r[0] + getra) < val;
+        r[getrc] = *(long*)(&r[0] + getra) < *(long*)&val;
         }
         fetch
         dispatch
         addqv: {
-        long val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral : r[getrb];
         r[getrc] = r[getra] + val;
         if(!checked_add_64(r[getra],val,NULL))
             throw CPUException(OVERFLOW_EXCEPTION);
@@ -446,7 +403,6 @@ class RVM {
         fetch
         dispatch
         subqv: {
-        long val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral : r[getrb];
         r[getrc] = r[getra] - val;
         if(!checked_sub_64(r[getra],val,NULL))
             throw CPUException(OVERFLOW_EXCEPTION);
@@ -454,16 +410,15 @@ class RVM {
         fetch
         dispatch
         cmple: {
-        long val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral :  *(long*)(&r[0] + getrb);
-        r[getrc] = *(long*)(&r[0] + getra) <= val;
+        r[getrc] = *(long*)(&r[0] + getra) <= *(long*)&val;
         }
         fetch
         dispatch
-        bitops:
-        int val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral : r[getrb];
+        bitops: {
+        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral : r[getrb];
         static void *handlersl2[64] = {&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved};
         goto *handlersl2[getintegerfunction];
-        and:
+        andf:
         r[getrc] = r[getra] & val;
         fetch
         dispatch
@@ -471,7 +426,7 @@ class RVM {
         r[getrc] = r[getra] | val;
         fetch
         dispatch
-        xor:
+        xorf:
         r[getrc] = r[getra] ^ val;
         fetch
         dispatch
@@ -487,7 +442,7 @@ class RVM {
         r[getrc] = r[getra] & ~val;
         fetch
         dispatch
-
+        }
         interrupt:
         //how to handle interrupts(hopefully):
         //realtime signal runs, which copies &&interrupt into all handler slots
@@ -694,6 +649,14 @@ int main()
             i++;
         }
     }
+
+    if(arr[2] == 1) {
+        std::cout << "alright who's dying first" << std::endl;
+    }
+    arr[0] = 0b00100000;
+    arr[1] = 0b10001111;
+    arr[2] = 0b11111000;
+    arr[3] = 0b00000000;
     /*arr[255] = 'H';
     arr[256] = 'e';
     arr[257] = 'l';
