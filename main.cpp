@@ -27,28 +27,28 @@
 #include <SDL/SDL_ttf.h>
 #include <math.h>
 #include <semaphore.h>
-#define MAX64 INT64_MAX
-#define MIN64 INT64_MIN
-#define MAX32 INT32_MAX
-#define MIN32 INT32_MIN
+#define MAX64 UINT64_MAX
+#define MIN64 0
+#define MAX32 UINT32_MAX
+#define MIN32 0
 #define ILLEGAL_INSTRUCTION 0
 #define PERMISSION_EXCEPTION 1
 #define ALIGNMENT_EXCEPTION 2
 #define OVERFLOW_EXCEPTION 3
 #define RAPIC_EOI 4
-#define int128_t __int128_t
+#define uint128_t __uint128_t
 #define fetch         pc += 4; \
     for(int i = 0; i < 32;i++) { std::cout << ":" << r[i];} \
                         std::cout << std::endl;\
-                      inst.full = *mmu.read32(pc);
-#define getra ((inst.split[0] & 0x01) | ((inst.split[0] & 0xF0) >> 3))
-#define getrb ((inst.split[3] & 0x80 >> 7) | ((inst.split[0] & 0x0F) << 1))
-#define getrc (inst.split[4] & 0b00011111)
+                      inst.full = __bswap_32(*mmu.read32(pc));
+#define getra ((inst.full & 0b00000001111100000000000000000000) >> 20)
+#define getrb ((inst.full & 0b00000000000011111000000000000000) >> 15)
+#define getrc (inst.full & 0b00000000000000000000000000011111)
 #define getdisp (unsigned short)((inst.split[3] & 0b01111111) << 9) | (unsigned short)((inst.split[3]) << 1)
-#define getintegerfunction (unsigned short)((inst.split[3] & 0b00000111 << 3) | (inst.split[4] & 0b11100000 >> 5) )
+#define getintegerfunction (unsigned short)((inst.full & 0b00000000000000000000011111100000) >> 5)
 #define getliteral ((unsigned char)((inst.full & 0b00000000000011111111000000000000) >> 12))
 #define dispatch std::cout << "dispatching handler :" << ((inst.full & 0b11111110000000000000000000000000) >> 25) << std::endl;\
-                    std::cout << std::bitset<32>(inst.full) << " " << (int)getliteral << std::endl; \
+                    std::cout << std::bitset<32>(inst.full) << " " << (int)getliteral <<  ((std::bitset<32>(inst.full)[19] == 1) == true) << std::endl; \
                     goto *handlers[(inst.full & 0b11111110000000000000000000000000) >> 25];
 class CPUException : public std::exception {
     public:
@@ -76,35 +76,36 @@ void split_string(std::string const &k, std::string const &delim, std::vector<st
     output.emplace_back(last_ptr);
 }
 
-int checked_add_32(int64_t a, int64_t b, int64_t *rp) {
-  int128_t lr = (int64_t)a + (int64_t)b;
+int checked_add_32(uint64_t a, uint64_t b, uint64_t *rp) {
+  uint128_t lr = (uint64_t)a + (uint64_t)b;
   if(rp != NULL)
       *rp = lr;
-  return lr > MAX32 || lr < MIN32;
+  return lr > MAX32;
 }
 
-int checked_sub_32(int64_t a, int64_t b, int64_t *rp) {
-  int128_t lr = (int64_t)a - (int64_t)b;
+int checked_sub_32(uint64_t a, uint64_t b, uint64_t *rp) {
+  uint128_t lr = (uint64_t)a - (uint64_t)b;
   if(rp != NULL)
     *rp = lr;
-  return lr > MAX32 || lr < MIN32;
+  return lr > MAX32;
 }
 
-int checked_add_64(int64_t a, int64_t b, int64_t *rp) {
-  int128_t lr = (int128_t)a + (int128_t)b;
+int checked_add_64(uint64_t a, int64_t b, uint64_t *rp) {
+  uint128_t lr = (uint128_t)a + (uint128_t)b;
   if(rp != NULL)
       *rp = lr;
-  return lr > MAX64 || lr < MIN64;
+  return lr > MAX64;
 }
 
-int checked_sub_64(int64_t a, int64_t b, int64_t *rp) {
-  int128_t lr = (int128_t)a - (int128_t)b;
+int checked_sub_64(uint64_t a, uint64_t b, uint64_t *rp) {
+  uint128_t lr = (uint128_t)a - (uint128_t)b;
   if(rp != NULL)
     *rp = lr;
-  return lr > MAX64 || lr < MIN64;
+  return lr > MAX64;
 }
 
 struct MemRange {
+    MemRange() {}
     MemRange(unsigned int address, unsigned int length) : address(address), length(length) {}
     unsigned long address;
     unsigned long length;
@@ -171,11 +172,11 @@ class RMMU {
     }
 
     void map(MemRange mrange,std::function<void(unsigned int, unsigned int, bool)> &func) {
-        //maps[mrange] = func;
+        maps[mrange] = func;
     }
 
     private:
-    //std::map<MemRange,std::function<void(unsigned int, unsigned int, bool)>> maps;
+    std::map<MemRange,std::function<void(unsigned int, unsigned int, bool)>> maps;
     unsigned char* baseaddr;
 };
 
@@ -250,7 +251,8 @@ class RVM {
     void start(bool debug, bool silent) {
         instruction inst;
         inst.full = __bswap_32(*mmu.read32(pc));
-        static void* handlers[] = { &&privcode, &&stop,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&loadaddress,&&loadaddresshigh,&&loadbyteunsigned,&&loadquadwordunaligned,&&storeword,&&storebyte,&&storequadwordunaligned,&&arithmetic10 };
+        static void* handlers[] = { &&privcode, &&stop,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&loadaddress,&&loadaddresshigh,&&loadbyteunsigned,&&loadquadwordunaligned,&&storeword,&&storebyte,&&storequadwordunaligned,&&arithmetic10, &&bitops };
+        unsigned long val = 0;
         startover:
         try {
             dispatch
@@ -294,10 +296,13 @@ class RVM {
         fetch
         dispatch
         arithmetic10:
-        unsigned long val = (std::bitset<32>(inst.full)[20] == 1) ? (getliteral) : r[(getrb)];
-        static void *jumplist[64] = {&&addl, &&reserved,&&reserved,&&s4addl,&&reserved,&&reserved,&&subl,&&reserved,&&reserved,&&s4subl,&&reserved,&&reserved,&&s8addl,&&reserved,&&reserved,&&cmpult,&&reserved,&&reserved,&&addq,&&reserved,&&reserved,&&s4addq,&&reserved,&&reserved,&&subq,&&reserved,&&reserved,&&s4subq,&&reserved,&&reserved,&&cmpeq,&&reserved,&&reserved,&&s8addq,&&reserved,&&reserved,&&s8subq,&&reserved,&&reserved,&&cmpule,&&reserved,&&reserved,&&addlv,&&reserved,&&reserved,&&sublv,&&reserved,&&reserved,&&cmplt,&&reserved,&&reserved,&&addqv,&&reserved,&&reserved,&&subqv,&&reserved,&&reserved,&&cmple};
+        val = (std::bitset<32>(inst.full)[19] == 1) ? (getliteral) : r[(getrb)];
+        static void *jumplist[64] = {&&addl, &&reserved,&&reserved,&&s4addl,&&reserved,&&reserved,&&subl,&&reserved,&&reserved,&&s4subl,&&reserved,&&reserved,&&s8addl,&&reserved,&&s8subl,&&cmpult,&&reserved,&&cmpbge,&&addq,&&reserved,&&reserved,&&s4addq,&&reserved,&&reserved,&&subq,&&reserved,&&reserved,&&s4subq,&&reserved,&&reserved,&&cmpeq,&&reserved,&&reserved,&&s8addq,&&reserved,&&reserved,&&s8subq,&&reserved,&&reserved,&&cmpule,&&reserved,&&reserved,&&addlv,&&reserved,&&reserved,&&sublv,&&reserved,&&reserved,&&cmplt,&&reserved,&&reserved,&&addqv,&&reserved,&&reserved,&&subqv,&&reserved,&&reserved,&&cmple};
         goto *jumplist[getintegerfunction];
         addl:
+        for(int i = 0;i < 32;i++) {
+            std::cout << std::bitset<32>(inst.full)[i] << "/" << i << std::endl;
+        }
         r[getrc] = sign_extend_32(r[getra] + val);
         fetch
         dispatch
@@ -415,8 +420,8 @@ class RVM {
         fetch
         dispatch
         bitops: {
-        unsigned long val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral : r[getrb];
-        static void *handlersl2[64] = {&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved};
+        val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral : r[getrb];
+        static void *handlersl2[64] = {&&and,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&bic,&&reserved,&&reserved,&&reserved,&&reserved,&&cmovlbs,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved};
         goto *handlersl2[getintegerfunction];
         andf:
         r[getrc] = r[getra] & val;
@@ -440,6 +445,18 @@ class RVM {
         dispatch
         bic:
         r[getrc] = r[getra] & ~val;
+        fetch
+        dispatch
+        cmovlbs:
+        r[getrc] = ((r[getra] % 2) != 0) ? r[getrb] : r[getrc];
+        fetch
+        dispatch
+        cmovlbc:
+        r[getrc] = ((r[getra] % 2) == 0) ? r[getrb] : r[getrc];
+        fetch
+        dispatch
+        cmoveq:
+        r[getrc] = (r[getra] == 0) ? r[getrb] : r[getrc];
         fetch
         dispatch
         }
@@ -656,7 +673,8 @@ int main()
     arr[0] = 0b00100000;
     arr[1] = 0b10001111;
     arr[2] = 0b11111000;
-    arr[3] = 0b00000000;
+    arr[3] = 0b01100010;
+    arr[4] = 0b00000010;
     /*arr[255] = 'H';
     arr[256] = 'e';
     arr[257] = 'l';

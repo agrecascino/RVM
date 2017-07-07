@@ -5,4 +5,4 @@ CONFIG -= qt
 
 SOURCES += main.cpp
 LIBS += -lpthread -lSDL -lSDL_ttf
-QMAKE_CXXFLAGS = -std=c++14 -g -march=native
+QMAKE_CXXFLAGS = -std=c++14 -g -march=nocona -O0
