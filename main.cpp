@@ -172,7 +172,7 @@ class RMMU {
     }
 
     void map(MemRange mrange,std::function<void(unsigned int, unsigned int, bool)> &func) {
-        maps[mrange] = func;
+        //maps[mrange] = func;
     }
 
     private:
@@ -183,10 +183,10 @@ class RMMU {
 class RIOMMU {
 
 };
-template <class type,int size> class RegisterBank {
+template <class type, size_t size> class RegisterBank {
 public:
     RegisterBank() {
-        for(int i = 0; i < size; i++) {
+        for(size_t i = 0; i < size; i++) {
             registers[i] = 0;
         }
         zero = 0;
@@ -421,7 +421,7 @@ class RVM {
         dispatch
         bitops: {
         val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral : r[getrb];
-        static void *handlersl2[64] = {&&and,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&bic,&&reserved,&&reserved,&&reserved,&&reserved,&&cmovlbs,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved};
+        static void *handlersl2[64] = {&&andf,&&reserved,&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&bic,&&reserved,&&reserved,&&reserved,&&reserved,&&cmovlbs,&&reserved,&&cmovlbc,&&reserved,&&reserved,&&reserved,&&bis,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved};
         goto *handlersl2[getintegerfunction];
         andf:
         r[getrc] = r[getra] & val;
@@ -674,7 +674,11 @@ int main()
     arr[1] = 0b10001111;
     arr[2] = 0b11111000;
     arr[3] = 0b01100010;
-    arr[4] = 0b00000010;
+    arr[4] = 0b00100010;
+    arr[5] = 0b00100001;
+    arr[6] = 0b00000000;
+    arr[7] = 0b01000010;
+    arr[8] = 0b00000010;
     /*arr[255] = 'H';
     arr[256] = 'e';
     arr[257] = 'l';
