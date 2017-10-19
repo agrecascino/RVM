@@ -249,15 +249,17 @@ class RVM {
     }
 
     void start(bool debug, bool silent) {
+        static void* handlers[] = { &&privcode, &&trap,&&trap,&&trap,&&trap,&&trap,&&trap,&&trap,&&trap,&&loadaddress,&&loadaddresshigh,&&loadbyteunsigned,&&loadquadwordunaligned,&&storeword,&&storebyte,&&storequadwordunaligned,&&arithmetic10, &&bitops };
+        static void* backuphandlers[] = { &&privcode, &&trap,&&trap,&&trap,&&trap,&&trap,&&trap,&&trap,&&trap,&&loadaddress,&&loadaddresshigh,&&loadbyteunsigned,&&loadquadwordunaligned,&&storeword,&&storebyte,&&storequadwordunaligned,&&arithmetic10, &&bitops };
+
         instruction inst;
         inst.full = __bswap_32(*mmu.read32(pc));
-        static void* handlers[] = { &&privcode, &&stop,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&loadaddress,&&loadaddresshigh,&&loadbyteunsigned,&&loadquadwordunaligned,&&storeword,&&storebyte,&&storequadwordunaligned,&&arithmetic10, &&bitops };
         unsigned long val = 0;
         startover:
         try {
             dispatch
-        stop:
-            exit(-1);
+        trap:
+            throw CPUException(ILLEGAL_INSTRUCTION);
         privcode:
         fetch
         dispatch
@@ -419,9 +421,9 @@ class RVM {
         }
         fetch
         dispatch
-        bitops: {
+        bitops:
         val = (std::bitset<32>(inst.full)[19] == 1) ? getliteral : r[getrb];
-        static void *handlersl2[64] = {&&andf,&&reserved,&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&bic,&&reserved,&&reserved,&&reserved,&&reserved,&&cmovlbs,&&reserved,&&cmovlbc,&&reserved,&&reserved,&&reserved,&&bis,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved};
+        static void *handlersl2[64] = {&&andf,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&bic,&&reserved,&&reserved,&&reserved,&&reserved,&&cmovlbs,&&reserved,&&cmovlbc,&&reserved,&&reserved,&&reserved,&&bis,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved,&&reserved};
         goto *handlersl2[getintegerfunction];
         andf:
         r[getrc] = r[getra] & val;
@@ -459,7 +461,6 @@ class RVM {
         r[getrc] = (r[getra] == 0) ? r[getrb] : r[getrc];
         fetch
         dispatch
-        }
         interrupt:
         //how to handle interrupts(hopefully):
         //realtime signal runs, which copies &&interrupt into all handler slots
@@ -476,6 +477,13 @@ class RVM {
         dispatch
         } catch(CPUException &except) {
             std::cout << "Caught CPU Exception, halting... type=" << except.getExceptionType() << std::endl;
+            switch(except.getExceptionType()) {
+                case ILLEGAL_INSTRUCTION:
+                    panic_mode = true;
+                    savedpc = pc;
+                    break;
+            }
+
             //goto startover;
             //this jump will restart dispatch, and put the cpu back into """normal""" operation
         }
@@ -485,6 +493,7 @@ class RVM {
     RegisterBank<unsigned long, 32> r;
     std::vector<std::function<void()>> function_list;
     private:
+    bool panic_mode = false;
     long breakpoint = -1;
     unsigned long n_inst = 0;
     RMMU &mmu;
